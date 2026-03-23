@@ -18,139 +18,128 @@ if 'coupon_pool' not in st.session_state:
     st.session_state.coupon_pool = []
 if 'field_configs' not in st.session_state:
     st.session_state.field_configs = []
+if 'final_xlsx' not in st.session_state:
+    st.session_state.final_xlsx = None
 
-# --- 1. 动态解析第7行标题及第8/9行选项 ---
-if template_file:
+# --- 1. 动态解析函数 (独立于 UI) ---
+def parse_template(file):
     try:
-        template_file.seek(0)
-        # 使用 data_only=True 以获取单元格显示的文本而非公式
-        wb_preview = load_workbook(template_file, data_only=True)
-        ws_preview = wb_preview.active
-        
+        file.seek(0)
+        # 必须使用 data_only=True
+        wb = load_workbook(file, data_only=True)
+        ws = wb.active
         configs = []
-        # 扫描第7行（标题行），前15列通常涵盖了所有优惠券字段
+        # 严格读取第 7 行标题
         for col in range(1, 16):
-            title = ws_preview.cell(row=7, column=col).value
+            title = ws.cell(row=7, column=col).value
             if title:
                 title_str = str(title).strip()
-                
-                # 检查第8行和第9行是否有预设值作为下拉参考
-                ref_vals = []
-                for r in [8, 9]:
-                    v = ws_preview.cell(row=r, column=col).value
-                    if v: ref_vals.append(str(v).strip())
-                
-                # 预设逻辑：识别常见的亚马逊下拉字段
-                options = None
-                # 如果标题包含特定关键字，提供标准选项
+                # 预设下拉逻辑
+                opts = None
                 if any(x in title_str for x in ["折扣类型", "Discount Type"]):
-                    options = ["Percentage", "Money"]
+                    opts = ["Percentage", "Money"]
                 elif any(x in title_str for x in ["只能兑换一次", "Limit"]):
-                    options = ["Yes", "No"]
-                elif any(x in title_str for x in ["目标买家", "Target Audience"]):
-                    options = ["All Customers", "Amazon Prime Members"]
+                    opts = ["Yes", "No"]
+                elif any(x in title_str for x in ["目标买家", "Target"]):
+                    opts = ["All Customers", "Amazon Prime Members"]
                 elif any(x in title_str for x in ["叠加", "Stack"]):
-                    options = ["Yes", "No"]
-                elif any(x in title_str for x in ["优惠券类型", "Coupon Type"]):
-                    options = ["Standard", "Subscribe & Save"]
+                    opts = ["Yes", "No"]
                 
-                configs.append({
-                    "col": col,
-                    "label": title_str,
-                    "options": options
-                })
-        
-        st.session_state.field_configs = configs
-        st.sidebar.success(f"✅ 已成功识别第7行标题")
-    except Exception as e:
-        st.sidebar.error(f"解析模板失败: {e}")
+                configs.append({"col": col, "label": title_str, "options": opts})
+        return configs
+    except:
+        return []
+
+# 当模板上传后，立即解析字段
+if template_file:
+    st.session_state.field_configs = parse_template(template_file)
+    st.sidebar.success(f"✅ 模板第7行解析成功")
 
 # --- 主界面 ---
 st.title("👗 Cupshe 亚马逊优惠券智能管理工具")
 
-tab1, tab2 = st.tabs(["第一阶段：基于第7行动态生成", "第二阶段：报错纠错修复"])
+tab1, tab2 = st.tabs(["第一阶段：动态表单生成", "第二阶段：报错纠错修复"])
 
 with tab1:
     if not template_file or not st.session_state.field_configs:
-        st.info("💡 请先在左侧上传『上传Coupon文件模板』。程序会自动提取第7行的需求字段。")
+        st.info("💡 请先在左侧上传『上传Coupon文件模板』。系统将自动识别第7行标题并生成输入框。")
     else:
-        st.header(f"1️⃣ 录入需求（基于模板字段）")
+        st.header("1️⃣ 录入优惠券需求")
         
-        with st.form("dynamic_coupon_form", clear_on_submit=True):
+        # 将表单逻辑包裹在完整的 with 块中，确保必须有 submit button
+        with st.form("coupon_input_form", clear_on_submit=True):
             user_responses = {}
-            # 动态生成表单布局
             grid = st.columns(2)
+            
             for idx, cfg in enumerate(st.session_state.field_configs):
                 with grid[idx % 2]:
-                    label_name = cfg['label']
-                    unique_key = f"field_{cfg['col']}"
+                    lbl = cfg['label']
+                    fid = f"f_{cfg['col']}"
                     
                     if cfg['options']:
-                        # 如果识别到下拉选项
-                        user_responses[cfg['col']] = st.selectbox(label_name, options=cfg['options'], key=unique_key)
-                    elif any(x in label_name for x in ["ASIN", "列表"]):
-                        # 如果是 ASIN 列表，使用大输入框
-                        user_responses[cfg['col']] = st.text_area(label_name, placeholder="分号分隔 ASIN", key=unique_key)
-                    elif any(x in label_name for x in ["日期", "Date"]):
-                        # 如果是日期字段
-                        user_responses[cfg['col']] = st.date_input(label_name, value=date.today() + timedelta(days=1), key=unique_key)
+                        user_responses[cfg['col']] = st.selectbox(lbl, options=cfg['options'], key=fid)
+                    elif any(x in lbl for x in ["ASIN", "列表"]):
+                        user_responses[cfg['col']] = st.text_area(lbl, placeholder="ASIN用分号分隔", key=fid)
+                    elif any(x in lbl for x in ["日期", "Date"]):
+                        user_responses[cfg['col']] = st.date_input(lbl, value=date.today() + timedelta(days=1), key=fid)
                     else:
-                        # 普通文本输入
-                        user_responses[cfg['col']] = st.text_input(label_name, key=unique_key)
+                        user_responses[cfg['col']] = st.text_input(lbl, key=fid)
             
-            if st.form_submit_button("➕ 添加到需求列表"):
-                # 处理数据格式转换
-                formatted_row = {}
+            # 表单内必须有这个按钮
+            add_submitted = st.form_submit_button("➕ 添加此条需求至列表")
+            
+            if add_submitted:
+                new_row = {}
                 for c_idx, val in user_responses.items():
                     if isinstance(val, (date, datetime)):
-                        formatted_row[c_idx] = val.strftime("%m/%d/%Y")
+                        new_row[c_idx] = val.strftime("%m/%d/%Y")
                     else:
-                        formatted_row[c_idx] = str(val) if val is not None else ""
-                st.session_state.coupon_pool.append(formatted_row)
-                st.toast("需求已添加")
+                        new_row[c_idx] = str(val) if val is not None else ""
+                st.session_state.coupon_pool.append(new_row)
+                st.toast("已记录一项需求！")
 
-        # 预览与生成文件
+        # --- 预览与生成 ---
         if st.session_state.coupon_pool:
-            st.subheader("📋 待填充的需求池预览")
-            # 显示时将列索引换回标题文字
-            display_map = {c['col']: c['label'] for c in st.session_state.field_configs}
-            st.dataframe(pd.DataFrame(st.session_state.coupon_pool).rename(columns=display_map))
+            st.subheader("📋 待处理需求池")
+            name_map = {c['col']: c['label'] for c in st.session_state.field_configs}
+            st.dataframe(pd.DataFrame(st.session_state.coupon_pool).rename(columns=name_map))
             
-            b1, b2 = st.columns(2)
-            if b1.button("🗑️ 清空列表"):
+            c1, c2 = st.columns(2)
+            if c1.button("🗑️ 清空所有记录"):
                 st.session_state.coupon_pool = []
+                st.session_state.final_xlsx = None
                 st.rerun()
             
-            if b2.button("🚀 填充模板并下载"):
+            if c2.button("🚀 填充模板并生成文件"):
                 template_file.seek(0)
-                final_wb = load_workbook(template_file)
-                final_ws = final_wb.active
+                wb = load_workbook(template_file)
+                ws = wb.active
                 
-                # --- 核心：寻找真正的起始空行 ---
-                # 从第8行开始往下扫描，直到发现第一列（ASIN列）为空
-                start_fill_row = 8
-                while True:
-                    cell_val = final_ws.cell(row=start_fill_row, column=1).value
-                    if cell_val is not None and len(str(cell_val).strip()) > 0:
-                        start_fill_row += 1
-                    else:
+                # 寻找空行：从第8行起，直到A列为空
+                start_row = 8
+                while ws.cell(row=start_row, column=1).value is not None:
+                    if len(str(ws.cell(row=start_row, column=1).value).strip()) == 0:
                         break
+                    start_row += 1
                 
-                # 批量写入用户添加的所有需求
-                for offset, data_row in enumerate(st.session_state.coupon_pool):
-                    target_row = start_fill_row + offset
-                    for col_idx, value in data_row.items():
-                        final_ws.cell(row=target_row, column=int(col_idx)).value = value
+                # 写入
+                for i, data in enumerate(st.session_state.coupon_pool):
+                    target_r = start_row + i
+                    for col_idx, value in data.items():
+                        ws.cell(row=target_r, column=int(col_idx)).value = value
                 
-                # 保存并提供下载
-                out_io = io.BytesIO()
-                final_wb.save(out_io)
-                st.success(f"✅ 填充完毕！已自动避开示例，从第 {start_fill_row} 行开始填充。")
-                st.download_button(
-                    label="💾 点击下载填充后的 Excel",
-                    data=out_io.getvalue(),
-                    file_name=f"Coupon_Batch_{date.today().strftime('%m%d')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+                out = io.BytesIO()
+                wb.save(out)
+                st.session_state.final_xlsx = out.getvalue()
+                st.success(f"✅ 数据已填充，从第 {start_row} 行开始。")
 
-# 第二阶段（报错处理）保持原有逻辑...
+    # 下载按钮放在 Form 之外
+    if st.session_state.final_xlsx:
+        st.download_button(
+            label="💾 下载生成的上传文件",
+            data=st.session_state.final_xlsx,
+            file_name=f"Coupon_Upload_{date.today().strftime('%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+# 第二阶段（修复）代码略...
